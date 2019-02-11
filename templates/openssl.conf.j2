@@ -1,0 +1,12 @@
+distinguished_name = req_distinguished_name
+
+[req_distinguished_name]
+
+[req_server]
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = dc01.{{ domain_dns_name }}
+DNS.2 = {{ domain_dns_name }}
+DNS.3 = {{ domain_dns_name.split('.')[0] | upper }}

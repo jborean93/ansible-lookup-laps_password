@@ -1,0 +1,80 @@
+---
+- name: test out the laps_password lookup plugin
+  hosts: localhost
+  gather_facts: no
+  vars:
+    host: child01
+    kdc: dc01.{{ domain_dns_name }}
+    cacert: '{{ playbook_dir }}/cert-temp/ca.pem'
+
+  tasks:
+  - name: make sure we have cleared out all Kerberos tickets
+    command: kdestroy
+    ignore_errors: True
+
+  - name: get password using simple auth over LDAPS
+    set_fact:
+      admin_password: "{{ lookup('laps_password', host, kdc=kdc, scheme='ldaps', auth='simple', username=domain_user_upn, password=domain_pass, cacert_file=cacert) }}"
+
+  - name: make sure we can connect using the LAPS password
+    win_ping:
+    delegate_to: child
+    vars:
+      ansible_user: Administrator
+      ansible_password: '{{ admin_password }}'
+
+  # Now that we know LAPS is configured correctly we can try the various permutations
+  - name: get password using various methods
+    set_fact:
+      simple_plaintext: "{{ lookup('laps_password', host,
+                                   kdc=kdc,
+                                   auth='simple',
+                                   username=domain_user_upn,
+                                   password=domain_pass,
+                                   allow_plaintext=True) }}"
+      simple_start_tls: "{{ lookup('laps_password', host,
+                                 kdc=kdc,
+                                 auth='simple',
+                                 username=domain_user_upn,
+                                 password=domain_pass,
+                                 start_tls=True,
+                                 cacert_file=cacert) }}"
+      with_search_base: "{{ lookup('laps_password', host,
+                                   kdc=kdc,
+                                   auth='simple',
+                                   username=domain_user_upn,
+                                   password=domain_pass,
+                                   seach_base='OU=' + laps_ou_name + ',' + domain_base_path,
+                                   scheme='ldaps',
+                                   cacert_file=cacert) }}"
+      ignore_cert: "{{ lookup('laps_password', host,
+                              kdc=kdc,
+                              auth='simple',
+                              username=domain_user_upn,
+                              password=domain_pass,
+                              start_tls=True,
+                              validate_certs='never') }}"
+      gssapi_explicit: "{{ lookup('laps_password', host,
+                                  kdc=kdc,
+                                  username=domain_user_upn,
+                                  password=domain_pass) }}"
+
+
+  - name: assert lookup value is the same as our know good password
+    assert:
+      that:
+      - simple_plaintext == admin_password
+      - simple_start_tls == admin_password
+      - with_search_base == admin_password
+      - ignore_cert == admin_password
+      - gssapi_explicit == admin_password
+
+  # The gssapi_explicit fact means we know have a checked out Kerberos token so this will work
+  - name: get password using implicit gssapi auth
+    set_fact:
+      gssapi_implicit: "{{ lookup('laps_password', host, kdc=kdc) }}"
+
+  - name: assert implcit gssapi auth result
+    assert:
+      that:
+      - gssapi_explicit == admin_password

@@ -1,0 +1,6 @@
+.vagrant
+*.retry
+*.swp
+*.pyc
+cert-temp/
+roles/jborean93.*

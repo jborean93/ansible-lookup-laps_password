@@ -1,0 +1,191 @@
+---
+- name: setup the certificates for LDAPS
+  hosts: localhost
+  gather_facts: no
+  tasks:
+  - name: create local temp cert folder
+    file:
+      path: cert-temp
+      state: directory
+    register: cert_temp_dir
+
+  - name: generate CA private key
+    command: openssl genrsa -aes256 -out ca.key -passout pass:password 4096
+    args:
+      chdir: '{{ cert_temp_dir.path }}'
+      creates: ca.key
+
+  - name: generate CA certificate
+    command: openssl req -new -x509 -days 3650 -key ca.key -out ca.pem -subj "/CN={{ domain_dns_name }}" -passin pass:password
+    args:
+      chdir: '{{ cert_temp_dir.path }}'
+      creates: ca.pem
+
+  - name: generate LDAPS private key
+    command: openssl genrsa -aes256 -out ldaps.key -passout pass:password 4096
+    args:
+      chdir: '{{ cert_temp_dir.path }}'
+      creates: ldaps.key
+
+  - name: generate OpenSSL config file
+    template:
+      src: openssl.conf.j2
+      dest: cert-temp/openssl.conf
+
+  - name: generate LDAPS CSR
+    command: openssl req -new -key ldaps.key -out ldaps.csr -subj "/CN=dc01.{{ domain_dns_name }}" -config openssl.conf -reqexts req_server -passin pass:password
+    args:
+      chdir: '{{ cert_temp_dir.path }}'
+      creates: ldaps.csr
+
+  - name: generate LDAPS certificate
+    command: openssl x509 -req -in ldaps.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out ldaps.pem -days 3650 -extfile openssl.conf -extensions req_server -passin pass:password
+    args:
+      chdir: '{{ cert_temp_dir.path }}'
+      creates: ldaps.pem
+
+  - name: create LDAPS pfx
+    command: 'openssl pkcs12 -export -out ldaps.pfx -inkey ldaps.key -in ldaps.pem -passin pass:password -passout pass:'
+    args:
+      chdir: '{{ cert_temp_dir.path }}'
+      creates: ldaps.pfx
+
+- name: setup the domain controller
+  hosts: dc01
+  gather_facts: no
+  tasks:
+  - name: get name of the interface alias
+    win_shell: (Get-NetIPConfiguration | Where-Object { $_.IPv4Address.IPAddress -eq '{{ ansible_host }}' }).InterfaceAlias
+    changed_when: False
+    register: adapter_name
+
+  - name: set the DNS IP to localhost
+    win_dns_client:
+      adapter_name: '{{ adapter_name.stdout | trim }}'
+      ipv4_addresses: 127.0.0.1
+
+  - name: create domain
+    win_domain:
+      dns_domain_name: '{{ domain_dns_name }}'
+      safe_mode_password: '{{ domain_pass }}'
+    register: domain_res
+
+  - name: reboot after creating the domain
+    win_reboot:
+    when: domain_res.reboot_required
+
+  - name: create domain admin user
+    win_domain_user:
+      name: '{{ domain_user }}'
+      upn: '{{ domain_user_upn }}'
+      password: '{{ domain_pass }}'
+      password_never_expires: yes
+      groups:
+      - Domain Admins
+      state: present
+    register: domain_user
+    retries: 30
+    delay: 15
+    until: domain_user is successful
+
+  - name: check if OU exists
+    win_shell: |
+      try {
+          Get-ADOrganizationalUnit -Identity 'OU={{ laps_ou_name }},{{ domain_base_path }}' > $null
+          $true
+      } catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+          $false
+      }
+    changed_when: False
+    register: ou_stat
+
+  - name: create OU
+    win_shell: New-ADOrganizationalUnit -Name '{{ laps_ou_name }}' -Path '{{ domain_base_path }}'
+    when: not ou_stat.stdout | trim | bool
+
+  - name: configure LAPS server
+    import_role:
+      name: jborean93.win_laps
+    vars:
+      man_laps_ou_containers:
+      - OU={{ laps_ou_name }},{{ domain_base_path }}
+      opt_laps_configure_gpo: True
+      opt_laps_install_server: True
+
+  - name: copy CA cert
+    win_copy:
+      src: cert-temp/ca.pem
+      dest: C:\temp\ca.pem
+
+  - name: LDAPS pfx
+    win_copy:
+      src: cert-temp/ldaps.pfx
+      dest: C:\temp\ldaps.pfx
+
+  - name: import CA cert to trusted root store
+    win_certificate_store:
+      path: C:\temp\ca.pem
+      state: present
+      store_location: LocalMachine
+      store_name: Root
+
+  - name: import LDAPS pfx into LocalMachine Personal store
+    win_certificate_store:
+      path: C:\temp\ldaps.pfx
+      state: present
+      store_location: LocalMachine
+      store_name: My
+      key_exportable: True
+      key_storage: machine
+    register: pfx_import
+    become: yes
+    become_method: runas
+    vars:
+      ansible_become_user: '{{ ansible_user }}'
+      ansible_become_pass: '{{ ansible_password }}'
+
+  - name: reboot after installing LDAPS pfx cert
+    win_reboot:
+    when: pfx_import is changed
+
+- name: join child host to domain
+  hosts: child
+  gather_facts: no
+  tasks:
+  - name: get name of the interface alias
+    win_shell: (Get-NetIPConfiguration | Where-Object { $_.IPv4Address.IPAddress -eq '{{ ansible_host }}' }).InterfaceAlias
+    changed_when: False
+    register: adapter_name
+
+  - name: point DNS ot the DC
+    win_dns_client:
+      adapter_names: '{{ adapter_name.stdout | trim }}'
+      ipv4_addresses: '{{ hostvars["dc01"]["ansible_host"] }}'
+
+  - name: join host to domain
+    win_domain_membership:
+      dns_domain_name: '{{ domain_dns_name | upper }}'
+      domain_admin_user: '{{ domain_user_upn }}'
+      domain_admin_password: '{{ domain_pass }}'
+      domain_ou_path: OU={{ laps_ou_name }},{{ domain_base_path }}
+      state: domain
+    register: domain_join
+
+  - name: reboot after joining host to domain
+    win_reboot:
+    when: domain_join.reboot_required
+
+  - name: make sure builtin Admin account is not disabled
+    win_user:
+      name: Administrator
+      account_disabled: no
+      state: present
+
+  - name: configure LAPS client
+    import_role:
+      name: jborean93.win_laps
+    vars:
+      opt_laps_install_client: True
+
+  - name: refresh GPO on the client
+    win_command: gpupdate /force
