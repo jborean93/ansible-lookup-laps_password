@@ -189,3 +189,69 @@
 
   - name: refresh GPO on the client
     win_command: gpupdate /force
+
+- name: setup linux hosts
+  hosts: linux
+  become: True
+  tasks:
+  - name: load package vars for each distro
+    include_vars:
+      file: '{{ ansible_pkg_mgr }}.yml'
+
+  - name: install required packages
+    package:
+      name: '{{ packages }}'
+
+  - name: template out krb5.conf file
+    template:
+      src: krb5.conf.j2
+      dest: /etc/krb5.conf
+
+  - name: ensure pip and setuptools are updated to the latest before installing Python packages
+    pip:
+      name:
+      - pip
+      - setuptools
+      state: latest
+
+  - name: install the required Python packages
+    pip:
+      name:
+      - ansible
+      - pexpect
+      - pypsrp
+      - python-ldap
+
+  - name: make sure the host can resolve the domain controller
+    lineinfile:
+      path: /etc/hosts
+      line: "{{ hostvars['dc01']['ansible_host'] }}  dc01 dc01.{{ domain_dns_name | lower }}"
+
+  - name: checkout Ansible devel
+    git:
+      repo: https://github.com/ansible/ansible.git
+      dest: ~/ansible
+    become: False
+
+  - name: ensure profile activates Ansible checkout
+    lineinfile:
+      path: ~/.bashrc
+      line: source ~/ansible/hacking/env-setup -q
+    become: False
+
+  - name: create testing directory
+    file:
+      path: ~/testing/cert-temp
+      state: directory
+    become: False
+
+  - name: copy testing files
+    copy:
+      src: '{{ playbook_dir }}/{{ item }}'
+      dest: ~/testing/{{ item }}
+    become: False
+    with_items:
+    - ansible.cfg
+    - inventory.ini
+    - tests.yml
+    - cert-temp/ca.pem

@@ -1,0 +1,9 @@
+---
+packages:
+- cyrus-sasl-gssapi
+- gcc
+- git
+- libldap
+- python-pip
+- krb5
+- vim

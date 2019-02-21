@@ -1,0 +1,11 @@
+---
+packages:
+- cyrus-sasl-gssapi
+- gcc
+- git
+- krb5-workstation
+- openldap-devel
+- python-devel
+- python-pip
+- python-setuptools
+- vim
