@@ -149,23 +149,48 @@ Alongside these, you will also need to install the following Python libraries
 * [pypsrp](https://pypi.org/project/pypsrp/)
 * [pexpect](https://pypi.org/project/pexpect/)
 
+These requirements are automatically installed on each of the test linux hosts
+as part of the Vagrant provisioning stage. They are only required if you need
+to run the tests locally.
+
 
 # Setting up Environment
 
-To setup the environment ensure you have met all the pre-requisites, once that
-is done run the following commands;
+To setup the environment ensure that you have Vagrant, VirtualBox and Ansible
+installed. Once that is done run the following commands;
 
 ```
 ansible-galaxy install -r requirements.yml -p roles
 vagrant up
 ```
 
+This will take a while and will download a few Vagrant boxes.
+
 
 # Running integration tests
 
-Now that the host has been set up the next step is to setup DNS correctly on
-the current host so that it can talk to the domain controller and retrieve
-Kerberos tokens.
+You have the option of running the integration tests for each of the following
+hosts;
+
+* Centos - `vagrant ssh centos`
+* Fedora - `vagrant ssh fedora`
+* Ubuntu - `vagrant ssh ubuntu`
+* Arch Linux - `vagrant ssh arch`
+* Your own host - will require the pre-requisites and Kerberos to be correctly configured
+
+To simple test against the pre-build hosts, run;
+
+```
+vagrant ssh <os distro>
+cd ~/testing
+ansible-playbook -i inventory.ini tests.yml -vv
+```
+
+If you are wanting to test against your current host, you will need to;
+
+* Ensure DNS is set up correctly to talk to the domain host `dc01.ansible.laps` at `192.168.56.50`
+* Installed all the pre-requisites for the `laps_password` plugin as well as any testing requirements mentioned above
+* Ensure that you can retrieve a valid Kerberos token from the server
 
 Once that is done you can run the integration tests by running
 `ansible-playbook -i inventory.ini tests.yml`.
